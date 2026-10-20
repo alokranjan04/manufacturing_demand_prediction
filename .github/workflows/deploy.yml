@@ -1,0 +1,144 @@
+name: Deploy to GCP Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  PROJECT: nth-infusion-490008-h8
+  REGION: asia-south1
+  REPO: chem-ai
+  BACKEND_SERVICE: chem-ai-backend
+  FRONTEND_SERVICE: chem-ai-frontend
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    environment: GCP_Account_Setup
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Create Artifact Registry repo (idempotent)
+        run: |
+          gcloud artifacts repositories describe ${{ env.REPO }} \
+            --location=${{ env.REGION }} --project=${{ env.PROJECT }} 2>/dev/null \
+          || gcloud artifacts repositories create ${{ env.REPO }} \
+               --repository-format=docker \
+               --location=${{ env.REGION }} \
+               --project=${{ env.PROJECT }} --quiet
+
+      # ── Backend ─────────────────────────────────────────────────────────────
+
+      - name: Build backend image
+        run: |
+          docker build \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT }}/${{ env.REPO }}/backend:${{ github.sha }} \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT }}/${{ env.REPO }}/backend:latest \
+            ./backend
+
+      - name: Push backend image
+        run: |
+          docker push --all-tags \
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT }}/${{ env.REPO }}/backend
+
+      - name: Deploy backend to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.BACKEND_SERVICE }} \
+            --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT }}/${{ env.REPO }}/backend:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --cpu=2 \
+            --memory=2Gi \
+            --min-instances=1 \
+            --max-instances=5 \
+            --concurrency=20 \
+            --timeout=120 \
+            --port=8080 \
+            --set-secrets="OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,DATABRICKS_TOKEN=DATABRICKS_TOKEN:latest,DATABRICKS_SERVER_HOSTNAME=DATABRICKS_SERVER_HOSTNAME:latest,DATABRICKS_HTTP_PATH=DATABRICKS_HTTP_PATH:latest,DATABRICKS_JOB_ID=DATABRICKS_JOB_ID:latest,DATABRICKS_VOLUME_INCOMING_PATH=DATABRICKS_VOLUME_INCOMING_PATH:latest" \
+            --set-env-vars="OPENROUTER_MODEL=minimax/minimax-m3.1-flash:free,CHEM_AI_CATALOG=chem_ai,DEVIATION_THRESHOLD_PCT=10,AGENT_AUTO_RUN=false" \
+            --quiet
+
+      - name: Get backend URL
+        id: backend-url
+        run: |
+          URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
+            --region=${{ env.REGION }} --format="value(status.url)")
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Backend URL: $URL"
+
+      # ── Frontend ────────────────────────────────────────────────────────────
+
+      - name: Build frontend image
+        run: |
+          docker build \
+            --build-arg VITE_API_BASE_URL=${{ steps.backend-url.outputs.url }} \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT }}/${{ env.REPO }}/frontend:${{ github.sha }} \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT }}/${{ env.REPO }}/frontend:latest \
+            ./frontend
+
+      - name: Push frontend image
+        run: |
+          docker push --all-tags \
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT }}/${{ env.REPO }}/frontend
+
+      - name: Deploy frontend to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.FRONTEND_SERVICE }} \
+            --image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT }}/${{ env.REPO }}/frontend:${{ github.sha }} \
+            --region=${{ env.REGION }} \
+            --platform=managed \
+            --allow-unauthenticated \
+            --cpu=1 \
+            --memory=512Mi \
+            --min-instances=0 \
+            --max-instances=3 \
+            --concurrency=80 \
+            --port=80 \
+            --quiet
+
+      - name: Get frontend URL
+        id: frontend-url
+        run: |
+          URL=$(gcloud run services describe ${{ env.FRONTEND_SERVICE }} \
+            --region=${{ env.REGION }} --format="value(status.url)")
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Frontend URL: $URL"
+
+      # ── Update CORS ──────────────────────────────────────────────────────────
+
+      - name: Update backend CORS with frontend URL
+        run: |
+          gcloud run services update ${{ env.BACKEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --set-env-vars="OPENROUTER_MODEL=minimax/minimax-m3.1-flash:free,CHEM_AI_CATALOG=chem_ai,DEVIATION_THRESHOLD_PCT=10,AGENT_AUTO_RUN=false,ALLOWED_ORIGINS=${{ steps.frontend-url.outputs.url }}" \
+            --quiet
+
+      # ── Summary ──────────────────────────────────────────────────────────────
+
+      - name: Deployment summary
+        run: |
+          echo "### Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | URL |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend API | ${{ steps.backend-url.outputs.url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Frontend | ${{ steps.frontend-url.outputs.url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Health check | ${{ steps.backend-url.outputs.url }}/health |" >> $GITHUB_STEP_SUMMARY

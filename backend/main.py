@@ -595,15 +595,10 @@ def get_pipeline_status(run_id: int) -> PipelineStatusResponse:
     ),
 )
 async def upload_and_trigger_pipeline(
-    sales_transactions_file: Optional[UploadFile] = File(
-        None, description="CSV whose filename starts with 'sales_transactions', e.g. sales_transactions_2026_09.csv"
-    ),
-    calendar_marketing_file: Optional[UploadFile] = File(
-        None,
-        description="CSV whose filename starts with 'calendar_marketing_external', e.g. calendar_marketing_external_2026_09.csv",
+    files: List[UploadFile] = File(
+        ..., description="One or more CSVs whose filenames start with order_transactions, inventory_levels, production_capacity, or external_signals."
     ),
 ) -> PipelineUploadAndTriggerResponse:
-    files = [f for f in (sales_transactions_file, calendar_marketing_file) if f is not None]
     uploaded = await _upload_pipeline_files(files)
     run_id = _trigger_pipeline_job()
     return PipelineUploadAndTriggerResponse(files=uploaded, run_id=run_id)

@@ -1,0 +1,102 @@
+substitutions:
+  _REGION: asia-south1
+  _PROJECT: nth-infusion-490008-h8
+  _REPO: chem-ai
+  _BACKEND_SERVICE: chem-ai-backend
+  _FRONTEND_SERVICE: chem-ai-frontend
+
+steps:
+  # ── Backend ────────────────────────────────────────────────────────────────
+
+  - id: build-backend
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/backend:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/backend:latest
+      - ./backend
+
+  - id: push-backend
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-backend]
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/backend
+
+  - id: deploy-backend
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    waitFor: [push-backend]
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_BACKEND_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/backend:$SHORT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --cpu=2
+      - --memory=2Gi
+      - --min-instances=1
+      - --max-instances=5
+      - --concurrency=20
+      - --timeout=120
+      - --port=8080
+      - --set-secrets=OPENROUTER_API_KEY=OPENROUTER_API_KEY:latest,DATABRICKS_TOKEN=DATABRICKS_TOKEN:latest,DATABRICKS_SERVER_HOSTNAME=DATABRICKS_SERVER_HOSTNAME:latest,DATABRICKS_HTTP_PATH=DATABRICKS_HTTP_PATH:latest,DATABRICKS_JOB_ID=DATABRICKS_JOB_ID:latest,DATABRICKS_VOLUME_INCOMING_PATH=DATABRICKS_VOLUME_INCOMING_PATH:latest
+      - --set-env-vars=OPENROUTER_MODEL=minimax/minimax-m3.1-flash:free,CHEM_AI_CATALOG=chem_ai,DEVIATION_THRESHOLD_PCT=10,AGENT_AUTO_RUN=false,ALLOWED_ORIGINS=https://chem-ai-frontend-HASH-el.a.run.app
+      - --quiet
+
+  # ── Frontend ───────────────────────────────────────────────────────────────
+
+  - id: build-frontend
+    name: gcr.io/cloud-builders/docker
+    waitFor: [deploy-backend]
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/frontend:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/frontend:latest
+      - --build-arg
+      - VITE_API_BASE_URL=https://chem-ai-backend-HASH-el.a.run.app
+      - ./frontend
+
+  - id: push-frontend
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-frontend]
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/frontend
+
+  - id: deploy-frontend
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    waitFor: [push-frontend]
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_FRONTEND_SERVICE}
+      - --image=${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/frontend:$SHORT_SHA
+      - --region=${_REGION}
+      - --platform=managed
+      - --allow-unauthenticated
+      - --cpu=1
+      - --memory=512Mi
+      - --min-instances=0
+      - --max-instances=3
+      - --concurrency=80
+      - --port=80
+      - --quiet
+
+images:
+  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/backend:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/backend:latest
+  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/frontend:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/${_PROJECT}/${_REPO}/frontend:latest
+
+options:
+  logging: CLOUD_LOGGING_ONLY

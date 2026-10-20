@@ -56,10 +56,19 @@ const QUICK_ACTIONS: QuickAction[] = [
   },
 ]
 
+const REGIONS = ['All', 'APAC', 'EMEA', 'AMER'] as const
+type Region = (typeof REGIONS)[number]
+
+function applyRegion(question: string, region: Region): string {
+  if (region === 'All') return question
+  return `${question} Focus specifically on the ${region} region only.`
+}
+
 function ChatPanel() {
   const [turns, setTurns] = useState<Turn[]>([])
   const [busy, setBusy] = useState(false)
   const [input, setInput] = useState('')
+  const [region, setRegion] = useState<Region>('All')
 
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
@@ -103,15 +112,31 @@ function ChatPanel() {
     const message = input.trim()
     if (!message || busy) return
     setInput('')
-    void runTurn(message)
+    void runTurn(applyRegion(message, region))
   }
 
   return (
     <div className="panel chat-panel">
       <h2>Ask the analytics assistant</h2>
-      <p className="scope-note">
-        Scope: <strong>Chemical Manufacturing — all SKUs &amp; regions</strong>
-      </p>
+
+      <div className="chat-scope-row">
+        <p className="scope-note">
+          Scope: <strong>Chemical Manufacturing — {region === 'All' ? 'all SKUs & regions' : `${region} region`}</strong>
+        </p>
+        <div className="region-filter">
+          <label htmlFor="region-select">Region:</label>
+          <select
+            id="region-select"
+            value={region}
+            onChange={(e) => setRegion(e.target.value as Region)}
+            disabled={busy}
+          >
+            {REGIONS.map((r) => (
+              <option key={r} value={r}>{r === 'All' ? 'All regions' : r}</option>
+            ))}
+          </select>
+        </div>
+      </div>
 
       <div className="quick-actions">
         {QUICK_ACTIONS.map((action) => (
@@ -120,7 +145,7 @@ function ChatPanel() {
             type="button"
             className="chip"
             disabled={busy}
-            onClick={() => void runTurn(action.question)}
+            onClick={() => void runTurn(applyRegion(action.question, region))}
           >
             {action.label}
           </button>

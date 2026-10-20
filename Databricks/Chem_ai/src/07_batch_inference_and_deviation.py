@@ -34,7 +34,8 @@
 
 # COMMAND ----------
 
-!pip install lightgbm
+import subprocess
+subprocess.run(["pip", "install", "lightgbm", "--quiet"], check=True)
 
 # COMMAND ----------
 
@@ -73,7 +74,7 @@ mlflow.set_registry_uri("databricks-uc")
 
 # COMMAND ----------
 
-RESET_PRIOR_FOR_DEMO = False
+RESET_PRIOR_FOR_DEMO = True
 
 if RESET_PRIOR_FOR_DEMO:
     spark.sql(f"DROP TABLE IF EXISTS {CATALOG}.{GOLD_SCHEMA}.forecast_results_prior")

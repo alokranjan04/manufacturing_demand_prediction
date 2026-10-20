@@ -34,7 +34,8 @@
 
 # COMMAND ----------
 
-!pip install lightgbm
+import subprocess
+subprocess.run(["pip", "install", "lightgbm", "--quiet"], check=True)
 
 # COMMAND ----------
 
