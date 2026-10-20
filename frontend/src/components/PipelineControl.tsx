@@ -8,7 +8,7 @@ interface FilePick {
   error: string | null
 }
 
-const ALLOWED_PREFIXES = ['sales_transactions', 'calendar_marketing_external']
+const ALLOWED_PREFIXES = ['order_transactions', 'inventory_levels', 'production_capacity', 'external_signals']
 const POLL_INTERVAL_MS = 4000
 const TERMINAL_STATES = ['TERMINATED', 'SKIPPED', 'INTERNAL_ERROR']
 
@@ -137,19 +137,19 @@ function PipelineControl() {
 
   return (
     <div className="panel pipeline-panel">
-      <h2>Retrain Forecasting Model</h2>
+      <h2>Chemical Manufacturing Pipeline</h2>
       <p className="pipeline-hint pipeline-subtitle">
-        Ingests sales data through Bronze → Silver → Gold, retrains the model, and generates a
-        fresh 30-day forecast.
+        Ingests chemical order and production data through Bronze → Silver → Gold, retrains the
+        LightGBM demand model, and runs batch inference + deviation detection.
       </p>
 
       <div className="pipeline-actions">
         <div className="pipeline-action">
-          <p className="pipeline-action-title">Upload New Data &amp; Retrain</p>
+          <p className="pipeline-action-title">Upload New Data &amp; Run Pipeline</p>
           <p className="pipeline-hint">
-            CSV filename(s) must start with <code>sales_transactions</code> or{' '}
-            <code>calendar_marketing_external</code>. Select both a sales file and a calendar
-            file together, or just one -- whichever data is available.
+            CSV filename(s) must start with <code>order_transactions</code>,{' '}
+            <code>inventory_levels</code>, <code>production_capacity</code>, or{' '}
+            <code>external_signals</code>. Select one or more files — whichever data is available.
           </p>
           <input type="file" accept=".csv" multiple onChange={handleFileChange} disabled={busy} />
           {filePicks.length > 0 && (
@@ -168,17 +168,17 @@ function PipelineControl() {
             onClick={() => void handleUploadAndTrigger()}
             disabled={busy || filePicks.length === 0 || hasInvalidFile}
           >
-            {busy ? 'Working…' : 'Upload & Retrain'}
+            {busy ? 'Working…' : 'Upload & Run Pipeline'}
           </button>
         </div>
 
         <div className="pipeline-action">
-          <p className="pipeline-action-title">Retrain on Existing Data</p>
+          <p className="pipeline-action-title">Run Pipeline on Existing Data</p>
           <p className="pipeline-hint">
-            Re-run training using the data already uploaded -- no new file needed.
+            Re-run the full pipeline using data already in the Volume — no new file needed.
           </p>
           <button type="button" className="counter" onClick={() => void handleTriggerOnly()} disabled={busy}>
-            {busy ? 'Working…' : 'Retrain Model'}
+            {busy ? 'Working…' : 'Run Pipeline'}
           </button>
         </div>
       </div>
@@ -187,7 +187,7 @@ function PipelineControl() {
 
       {runId && (
         <div className="pipeline-status">
-          <span>Training run #{runId}:</span>
+          <span>Pipeline run #{runId}:</span>
           {label ? (
             <span className={`status-badge status-badge--${label.tone}`}>
               {label.tone === 'running' || label.tone === 'pending' ? <span className="spinner" /> : null}

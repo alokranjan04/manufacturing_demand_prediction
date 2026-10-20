@@ -1,14 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import axios from 'axios'
 import ReactMarkdown from 'react-markdown'
-import { sendChatMessage, sendQuickAction } from '../api/chat'
+import { sendChatMessage } from '../api/chat'
 import type { ChatTurnHistory } from '../api/types'
-
-interface ChatPanelProps {
-  categories: string[]
-  selectedStoreId: string
-  selectedStoreName: string
-}
 
 interface Turn {
   id: string
@@ -22,7 +16,6 @@ interface QuickAction {
   id: string
   label: string
   question: string
-  run: () => Promise<{ answer: string }>
 }
 
 function describeError(error: unknown): string {
@@ -35,12 +28,38 @@ function describeError(error: unknown): string {
   return 'Something went wrong. Please try again.'
 }
 
-function ChatPanel({ categories, selectedStoreId, selectedStoreName }: ChatPanelProps) {
+const QUICK_ACTIONS: QuickAction[] = [
+  {
+    id: 'demand_at_risk',
+    label: 'Demand at risk by region',
+    question: 'Which regions have the highest demand at risk based on recent forecast deviations?',
+  },
+  {
+    id: 'top_deviation_skus',
+    label: 'Highest deviation SKUs',
+    question: 'Which SKUs show the largest forecast deviations compared to the prior run?',
+  },
+  {
+    id: 'inventory_cover',
+    label: 'Inventory cover status',
+    question: 'What is the current average inventory cover in days across active SKUs, and which are below safety stock?',
+  },
+  {
+    id: 'pending_actions',
+    label: 'Pending supply actions',
+    question: 'What supply actions are currently pending human approval from the agent?',
+  },
+  {
+    id: 'forecast_accuracy',
+    label: 'Forecast model accuracy',
+    question: 'What is the current forecast accuracy (MAPE) of the LightGBM champion model?',
+  },
+]
+
+function ChatPanel() {
   const [turns, setTurns] = useState<Turn[]>([])
   const [busy, setBusy] = useState(false)
   const [input, setInput] = useState('')
-  const [categoryA, setCategoryA] = useState('')
-  const [categoryB, setCategoryB] = useState('')
 
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
@@ -48,14 +67,7 @@ function ChatPanel({ categories, selectedStoreId, selectedStoreName }: ChatPanel
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [turns])
 
-  useEffect(() => {
-    if (categories.length >= 2 && !categoryA && !categoryB) {
-      setCategoryA(categories[0])
-      setCategoryB(categories[1])
-    }
-  }, [categories, categoryA, categoryB])
-
-  async function runTurn(question: string, task: () => Promise<{ answer: string }>) {
+  async function runTurn(question: string) {
     if (busy) return
     setBusy(true)
 
@@ -67,8 +79,12 @@ function ChatPanel({ categories, selectedStoreId, selectedStoreName }: ChatPanel
       { id: assistantId, role: 'assistant', content: '', pending: true },
     ])
 
+    const history: ChatTurnHistory[] = turns
+      .filter((turn) => !turn.pending && !turn.error)
+      .map((turn) => ({ role: turn.role, content: turn.content }))
+
     try {
-      const result = await task()
+      const result = await sendChatMessage(question, history)
       setTurns((prev) =>
         prev.map((turn) => (turn.id === assistantId ? { ...turn, content: result.answer, pending: false } : turn)),
       )
@@ -83,116 +99,33 @@ function ChatPanel({ categories, selectedStoreId, selectedStoreName }: ChatPanel
     }
   }
 
-  const storeScopeLabel = selectedStoreId ? ` at ${selectedStoreName || selectedStoreId}` : ' across all stores'
-
-  const quickActions: QuickAction[] = [
-    {
-      id: 'top_category',
-      label: 'Top selling category',
-      question: `What is the top selling category${storeScopeLabel}?`,
-      run: () => sendQuickAction('top_category', { store_id: selectedStoreId || undefined }),
-    },
-    {
-      id: 'top_product',
-      label: 'Top selling product',
-      question: `What is the top selling product${storeScopeLabel}?`,
-      run: () => sendQuickAction('top_product', { store_id: selectedStoreId || undefined }),
-    },
-    {
-      id: 'underperforming_stores',
-      label: 'Underperforming stores',
-      question: 'Which stores are underperforming?',
-      run: () => sendQuickAction('underperforming_stores'),
-    },
-    {
-      id: 'trending_down_products',
-      label: 'Products trending down',
-      question: 'Which products are trending down?',
-      run: () => sendQuickAction('trending_down_products'),
-    },
-    {
-      id: 'predicted_revenue',
-      label: 'Predicted revenue',
-      question: 'What is the total predicted revenue?',
-      run: () => sendQuickAction('predicted_revenue'),
-    },
-  ]
-
-  function handleCompareCategories() {
-    if (!categoryA || !categoryB) return
-    void runTurn(`Compare ${categoryA} vs ${categoryB}`, () =>
-      sendQuickAction('compare_categories', { category_a: categoryA, category_b: categoryB }),
-    )
-  }
-
-  function handleStorePerformance() {
-    if (!selectedStoreId) return
-    void runTurn(`How is ${selectedStoreName || selectedStoreId} performing vs. its history?`, () =>
-      sendQuickAction('store_performance', { store_id: selectedStoreId }),
-    )
-  }
-
   function handleSend() {
     const message = input.trim()
     if (!message || busy) return
     setInput('')
-
-    const history: ChatTurnHistory[] = turns
-      .filter((turn) => !turn.pending && !turn.error)
-      .map((turn) => ({ role: turn.role, content: turn.content }))
-
-    void runTurn(message, () => sendChatMessage(message, history, selectedStoreId, selectedStoreName))
+    void runTurn(message)
   }
 
   return (
     <div className="panel chat-panel">
       <h2>Ask the analytics assistant</h2>
       <p className="scope-note">
-        Scope: <strong>{selectedStoreId ? selectedStoreName || selectedStoreId : 'All stores'}</strong>
+        Scope: <strong>Chemical Manufacturing — all SKUs &amp; regions</strong>
       </p>
 
       <div className="quick-actions">
-        {quickActions.map((action) => (
+        {QUICK_ACTIONS.map((action) => (
           <button
             key={action.id}
             type="button"
             className="chip"
             disabled={busy}
-            onClick={() => void runTurn(action.question, action.run)}
+            onClick={() => void runTurn(action.question)}
           >
             {action.label}
           </button>
         ))}
-
-        {selectedStoreId && (
-          <button type="button" className="chip" disabled={busy} onClick={handleStorePerformance}>
-            This store vs. its history
-          </button>
-        )}
       </div>
-
-      {categories.length >= 2 && (
-        <div className="compare-row">
-          <select value={categoryA} onChange={(event) => setCategoryA(event.target.value)} disabled={busy}>
-            {categories.map((category) => (
-              <option key={category} value={category}>
-                {category}
-              </option>
-            ))}
-          </select>
-          <span>vs.</span>
-          <select value={categoryB} onChange={(event) => setCategoryB(event.target.value)} disabled={busy}>
-            {categories.map((category) => (
-              <option key={category} value={category}>
-                {category}
-              </option>
-            ))}
-          </select>
-          <button type="button" className="chip" disabled={busy} onClick={handleCompareCategories}>
-            Compare
-          </button>
-        </div>
-      )}
 
       <div className="conversation chat-conversation">
         {turns.length === 0 && (
@@ -223,7 +156,7 @@ function ChatPanel({ categories, selectedStoreId, selectedStoreName }: ChatPanel
           type="text"
           value={input}
           onChange={(event) => setInput(event.target.value)}
-          placeholder="Ask a business question…"
+          placeholder="Ask about demand, inventory, forecasts, or supply actions…"
           disabled={busy}
         />
         <button type="submit" className="counter" disabled={busy || !input.trim()}>

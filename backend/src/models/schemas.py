@@ -203,3 +203,91 @@ class PipelineUploadAndTriggerResponse(BaseModel):
     files: List[UploadedFileInfo]
     run_id: int
     status: str = "triggered"
+
+
+# ── Chemical Manufacturing AI schemas ─────────────────────────────────────────
+
+
+class ForecastDeviation(BaseModel):
+    """One SKU/region/customer_segment deviation from chem_ai.gold.forecast_deviations."""
+
+    deviation_id: str
+    sku: str
+    region: str
+    customer_segment: str
+    deviation_pct: float
+    direction: str  # "UP" or "DOWN"
+    current_predicted_tonnes: float
+    prior_predicted_tonnes: float
+    detection_timestamp: datetime
+
+
+class AgentRecommendation(BaseModel):
+    """One agent recommendation from chem_ai.gold.agent_recommendations."""
+
+    id: str
+    sku: str
+    region: str
+    customer_segment: Optional[str] = None
+    deviation_pct: Optional[float] = None
+    direction: Optional[str] = None
+    inventory_days_on_hand: Optional[float] = None
+    capacity_utilisation_pct: Optional[float] = None
+    supplier_lead_time_days: Optional[int] = None
+    action_type: str
+    description: str
+    urgency: str  # HIGH | MEDIUM | LOW
+    quantity_adjustment_tonnes: float
+    affected_plants: Optional[str] = None  # stored as JSON string in Delta
+    status: str  # PENDING | APPROVED | REJECTED
+    approver: Optional[str] = None
+    rejection_reason: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class ApprovalRequest(BaseModel):
+    """Request body for POST /agent/recommendations/{id}/approve."""
+
+    approver: str
+
+
+class RejectionRequest(BaseModel):
+    """Request body for POST /agent/recommendations/{id}/reject."""
+
+    reason: str
+
+
+class AgentCycleResult(BaseModel):
+    """Response body for POST /agent/run."""
+
+    deviations_found: int
+    recommendations_created: int
+    errors: int
+    run_timestamp: str
+
+
+class ChemicalSKU(BaseModel):
+    """One chemical SKU from chem_ai.silver.demand_history."""
+
+    product_code: str
+    product_grade: str
+    sku: str
+
+
+class ChemicalPlant(BaseModel):
+    """One chemical plant from chem_ai.bronze.production_capacity."""
+
+    plant_id: str
+    plant_name: str
+    region: str
+    country: str
+
+
+class ChemicalKPISummary(BaseModel):
+    """Response body for GET /chemical/kpis."""
+
+    demand_at_risk_tonnes: Optional[float] = None
+    avg_inventory_cover_days: Optional[float] = None
+    forecast_mape_pct: Optional[float] = None
+    pending_recommendations_count: int = 0
+    deviation_threshold_pct: float

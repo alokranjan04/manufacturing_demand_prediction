@@ -105,3 +105,53 @@ export interface PipelineStatusResponse {
   result_state: string | null
   state_message: string | null
 }
+
+// ── Chemical Manufacturing AI types ──────────────────────────────────────────
+
+export interface ForecastDeviation {
+  deviation_id: string
+  sku: string
+  region: string
+  customer_segment: string
+  deviation_pct: number
+  direction: 'UP' | 'DOWN'
+  current_predicted_tonnes: number
+  prior_predicted_tonnes: number
+  detection_timestamp: string
+}
+
+export interface AgentRecommendation {
+  id: string
+  sku: string
+  region: string
+  customer_segment: string | null
+  deviation_pct: number | null
+  direction: 'UP' | 'DOWN' | null
+  inventory_days_on_hand: number | null
+  capacity_utilisation_pct: number | null
+  supplier_lead_time_days: number | null
+  action_type: 'INCREASE_PRODUCTION' | 'REDUCE_PRODUCTION' | 'REBALANCE_DISTRIBUTION' | 'MONITOR_ONLY'
+  description: string
+  urgency: 'HIGH' | 'MEDIUM' | 'LOW'
+  quantity_adjustment_tonnes: number
+  affected_plants: string | null
+  status: 'PENDING' | 'APPROVED' | 'REJECTED'
+  approver: string | null
+  rejection_reason: string | null
+  created_at: string | null
+}
+
+export interface AgentCycleResult {
+  deviations_found: number
+  recommendations_created: number
+  errors: number
+  run_timestamp: string
+}
+
+export interface ChemicalKPISummary {
+  demand_at_risk_tonnes: number | null
+  avg_inventory_cover_days: number | null
+  forecast_mape_pct: number | null
+  pending_recommendations_count: number
+  deviation_threshold_pct: number
+}

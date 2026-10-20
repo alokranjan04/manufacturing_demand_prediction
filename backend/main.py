@@ -8,7 +8,8 @@ from typing import List, Optional, Union
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.data import analytics, databricks_jobs
+from src.agents.demand_agent import run_agent_cycle
+from src.data import agent_db, analytics, databricks_jobs
 from src.data.databricks_jobs import DatabricksJobsConfigError
 from src.data.db import (
     check_connection,
@@ -26,10 +27,17 @@ from src.genai.explain_context import build_forecast_context
 from src.genai.forecast_explainer import generate_explanation
 from src.genai.llm_client import LLMConfigError
 from src.models.schemas import (
+    AgentCycleResult,
+    AgentRecommendation,
+    ApprovalRequest,
     ChatRequest,
     ChatResponse,
+    ChemicalKPISummary,
+    ChemicalPlant,
+    ChemicalSKU,
     ExplainRequest,
     ExplainResponse,
+    ForecastDeviation,
     ForecastListResponse,
     ForecastPoint,
     ForecastRecord,
@@ -44,6 +52,7 @@ from src.models.schemas import (
     Product,
     ProductForecastGroup,
     QuickActionRequest,
+    RejectionRequest,
     Store,
     TopCategoryStat,
     TopProductStat,
@@ -453,7 +462,7 @@ def get_kpis() -> KPISummary:
     )
 
 
-ALLOWED_UPLOAD_PREFIXES = ("sales_transactions", "calendar_marketing_external")
+ALLOWED_UPLOAD_PREFIXES = ("order_transactions", "inventory_levels", "production_capacity", "external_signals")
 
 
 def _validate_upload_filename(filename: Optional[str]) -> str:
@@ -598,6 +607,177 @@ async def upload_and_trigger_pipeline(
     uploaded = await _upload_pipeline_files(files)
     run_id = _trigger_pipeline_job()
     return PipelineUploadAndTriggerResponse(files=uploaded, run_id=run_id)
+
+
+DEVIATION_THRESHOLD_PCT_DEFAULT = float(os.environ.get("DEVIATION_THRESHOLD_PCT", "10.0"))
+
+
+# ── Chemical Manufacturing AI routes ──────────────────────────────────────────
+
+
+@app.get(
+    "/agent/deviations",
+    response_model=List[ForecastDeviation],
+    summary="Current forecast deviations above threshold",
+    description=(
+        "Returns all SKU/region/customer_segment combinations where the latest "
+        "batch inference forecast deviated from the prior run by at least "
+        "`threshold_pct` percent. Sourced from chem_ai.gold.forecast_deviations."
+    ),
+)
+def get_agent_deviations(
+    threshold_pct: float = Query(DEVIATION_THRESHOLD_PCT_DEFAULT, description="Minimum absolute deviation % to return"),
+) -> List[ForecastDeviation]:
+    try:
+        rows = agent_db.fetch_deviations(threshold_pct)
+    except Exception:
+        logger.exception("Failed to fetch forecast deviations")
+        raise HTTPException(status_code=500, detail="Failed to fetch deviations from Databricks.")
+    return [ForecastDeviation(**row) for row in rows]
+
+
+@app.get(
+    "/agent/recommendations",
+    response_model=List[AgentRecommendation],
+    summary="Pending agent recommendations awaiting human approval",
+    description=(
+        "Returns all PENDING supply planning recommendations from "
+        "chem_ai.gold.agent_recommendations, sorted by urgency (HIGH first) "
+        "then deviation magnitude."
+    ),
+)
+def get_agent_recommendations() -> List[AgentRecommendation]:
+    try:
+        rows = agent_db.fetch_pending_recommendations()
+    except Exception:
+        logger.exception("Failed to fetch agent recommendations")
+        raise HTTPException(status_code=500, detail="Failed to fetch recommendations from Databricks.")
+    return [AgentRecommendation(**row) for row in rows]
+
+
+@app.post(
+    "/agent/recommendations/{rec_id}/approve",
+    response_model=AgentRecommendation,
+    summary="Approve a pending agent recommendation",
+    description=(
+        "Sets the recommendation status to APPROVED and records the approver name. "
+        "Returns the updated recommendation. Returns 404 if the ID is not found or "
+        "the recommendation has already been decided."
+    ),
+)
+def approve_agent_recommendation(rec_id: str, request: ApprovalRequest) -> AgentRecommendation:
+    try:
+        agent_db.approve_recommendation(rec_id, request.approver)
+        agent_db.insert_audit_log(
+            event_type="APPROVED",
+            recommendation_id=rec_id,
+            actor=request.approver,
+            details=f"Approved by {request.approver}",
+        )
+        updated = agent_db.fetch_recommendation_by_id(rec_id)
+    except Exception:
+        logger.exception("Failed to approve recommendation id=%s", rec_id)
+        raise HTTPException(status_code=500, detail="Failed to approve recommendation.")
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Recommendation {rec_id!r} not found or already decided.")
+    return AgentRecommendation(**updated)
+
+
+@app.post(
+    "/agent/recommendations/{rec_id}/reject",
+    response_model=AgentRecommendation,
+    summary="Reject a pending agent recommendation",
+    description=(
+        "Sets the recommendation status to REJECTED and records the rejection reason. "
+        "Returns the updated recommendation. Returns 404 if the ID is not found or "
+        "the recommendation has already been decided."
+    ),
+)
+def reject_agent_recommendation(rec_id: str, request: RejectionRequest) -> AgentRecommendation:
+    try:
+        agent_db.reject_recommendation(rec_id, request.reason)
+        agent_db.insert_audit_log(
+            event_type="REJECTED",
+            recommendation_id=rec_id,
+            actor="PLANNER",
+            details=request.reason,
+        )
+        updated = agent_db.fetch_recommendation_by_id(rec_id)
+    except Exception:
+        logger.exception("Failed to reject recommendation id=%s", rec_id)
+        raise HTTPException(status_code=500, detail="Failed to reject recommendation.")
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Recommendation {rec_id!r} not found or already decided.")
+    return AgentRecommendation(**updated)
+
+
+@app.post(
+    "/agent/run",
+    response_model=AgentCycleResult,
+    summary="Manually trigger one agent analysis cycle",
+    description=(
+        "Runs detect_deviations → check_supply_constraints → generate_recommendation "
+        "→ create_recommendation_record for every deviation above the configured "
+        "DEVIATION_THRESHOLD_PCT. Returns a summary of deviations found and "
+        "recommendations created. This is intentionally manual-trigger only — "
+        "set AGENT_AUTO_RUN=false in .env to keep it that way."
+    ),
+)
+def trigger_agent_run() -> AgentCycleResult:
+    try:
+        result = run_agent_cycle(threshold_pct=DEVIATION_THRESHOLD_PCT_DEFAULT)
+    except Exception:
+        logger.exception("Agent cycle failed")
+        raise HTTPException(status_code=500, detail="Agent cycle failed. Check server logs.")
+    return AgentCycleResult(**result)
+
+
+@app.get(
+    "/chemical/skus",
+    response_model=List[ChemicalSKU],
+    summary="List all chemical SKUs",
+    description="Returns distinct (product_code, product_grade, sku) from chem_ai.silver.demand_history.",
+)
+def get_chemical_skus() -> List[ChemicalSKU]:
+    try:
+        rows = agent_db.fetch_chemical_skus()
+    except Exception:
+        logger.exception("Failed to fetch chemical SKUs")
+        raise HTTPException(status_code=500, detail="Failed to fetch chemical SKUs from Databricks.")
+    return [ChemicalSKU(**row) for row in rows]
+
+
+@app.get(
+    "/chemical/plants",
+    response_model=List[ChemicalPlant],
+    summary="List all chemical plants",
+    description="Returns distinct plant IDs from chem_ai.bronze.production_capacity.",
+)
+def get_chemical_plants() -> List[ChemicalPlant]:
+    try:
+        rows = agent_db.fetch_chemical_plants()
+    except Exception:
+        logger.exception("Failed to fetch chemical plants")
+        raise HTTPException(status_code=500, detail="Failed to fetch chemical plants from Databricks.")
+    return [ChemicalPlant(**row) for row in rows]
+
+
+@app.get(
+    "/chemical/kpis",
+    response_model=ChemicalKPISummary,
+    summary="Chemical manufacturing dashboard KPIs",
+    description=(
+        "At-a-glance numbers for the chemical dashboard: demand at risk (tonnes), "
+        "average inventory cover (days), forecast MAPE (%), and pending recommendations count."
+    ),
+)
+def get_chemical_kpis() -> ChemicalKPISummary:
+    try:
+        summary = agent_db.fetch_chemical_kpis(DEVIATION_THRESHOLD_PCT_DEFAULT)
+    except Exception:
+        logger.exception("Failed to compute chemical KPI summary")
+        raise HTTPException(status_code=500, detail="Failed to compute chemical KPIs from Databricks.")
+    return ChemicalKPISummary(**summary)
 
 
 if __name__ == "__main__":
