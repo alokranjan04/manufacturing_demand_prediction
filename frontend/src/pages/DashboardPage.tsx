@@ -5,20 +5,6 @@ import KPIBar from '../components/KPIBar'
 import PipelineControl from '../components/PipelineControl'
 import TrendBackdrop from '../components/TrendBackdrop'
 
-function DeviationRow({ d }: { d: ForecastDeviation }) {
-  return (
-    <tr>
-      <td style={{ fontWeight: 600 }}>{d.sku}</td>
-      <td>{d.region}</td>
-      <td>{d.customer_segment}</td>
-      <td style={{ color: d.direction === 'UP' ? '#16a34a' : '#dc2626', fontWeight: 700 }}>
-        {d.direction === 'UP' ? '▲' : '▼'} {Math.abs(d.deviation_pct).toFixed(1)}%
-      </td>
-      <td>{d.current_predicted_tonnes.toFixed(1)} t</td>
-      <td>{d.prior_predicted_tonnes.toFixed(1)} t</td>
-    </tr>
-  )
-}
 
 function DashboardPage() {
   const [deviations, setDeviations] = useState<ForecastDeviation[]>([])
